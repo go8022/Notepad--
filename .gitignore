@@ -32,6 +32,11 @@ MANIFEST
 *.manifest
 *.spec
 
+# Notepad-- local runtime/build artifacts
+*.tmp
+*.old
+*.7z
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
