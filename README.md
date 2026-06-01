@@ -1,4 +1,4 @@
-# Phil Notepad+ 사용 설명서
+# Notepad-- 사용 설명서
 
 > **Version 1.5** · Python / tkinter 기반 경량 텍스트 에디터
 
@@ -6,7 +6,7 @@
 
 ## 📋 개요
 
-**Phil Notepad+**는 Notepad++의 핵심 기능을 Python 표준 라이브러리(tkinter)만으로 구현한 경량 텍스트 에디터입니다.
+**Notepad--**는 Notepad++의 핵심 기능을 Python 표준 라이브러리(tkinter)만으로 구현한 경량 텍스트 에디터입니다.
 
 - **외부 패키지 불필요** — Python만 설치되어 있으면 바로 실행 가능
 - **단일 파일** — `phil_notepad_plus_1.5.py` 하나로 모든 기능 제공
