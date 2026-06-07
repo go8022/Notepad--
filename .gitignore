@@ -36,6 +36,7 @@ MANIFEST
 *.tmp
 *.old
 *.7z
+*.zip
 
 # Installer logs
 pip-log.txt

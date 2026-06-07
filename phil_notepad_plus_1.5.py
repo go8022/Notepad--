@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phil Notepad+ — A Notepad++-like text editor built with Python / tkinter.
+Notepad-- — A Notepad++-like text editor built with Python / tkinter.
 Features: tabbed editing, syntax highlighting, line numbers, find & replace,
 dark/light themes, zoom, word-wrap toggle, go-to-line, recent files,
 session persistence (.tmp), and more.
@@ -11,11 +11,13 @@ import os
 import re
 import sys
 import ctypes
+import csv
+import difflib
 import tempfile
 import textwrap
 import webbrowser
 from ctypes import wintypes
-from html import escape as html_escape
+from html import escape as html_escape, unescape as html_unescape
 import tkinter as tk
 from datetime import datetime
 from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser, font as tkfont
@@ -183,6 +185,7 @@ PRINT_MARGIN_MM: int = 15
 DEFAULT_TAB_SIZE: int = 4
 DEFAULT_OCCURRENCE_COLOR: str = "#7A5C00"
 DEFAULT_OCCURRENCE_CURRENT_COLOR: str = "#FFB900"
+APP_NAME: str = "Notepad--"
 
 # ─── Theme colour palettes ──────────────────────────────────────────────
 THEMES: Dict[str, Dict[str, Any]] = {
@@ -300,13 +303,13 @@ class EditorTab:
         self.occurrence_lines: List[int] = []
 
 
-class PhilNotepadPlus:
+class NotepadMinusMinus:
     """Main application class."""
 
     # ── construction ────────────────────────────────────────────────────
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, startup_paths: Optional[List[str]] = None) -> None:
         self.root: tk.Tk = root
-        self.root.title("Phil Notepad+")
+        self.root.title(APP_NAME)
         self.root.geometry("1100x720")
 
         self.tabs: List[EditorTab] = []
@@ -325,6 +328,11 @@ class PhilNotepadPlus:
         self.file_history: Dict[str, Dict[str, Any]] = {}
         self._new_file_counter: int = 1
         self._syntax_highlight_job: Optional[str] = None
+        self.markdown_view_visible: bool = False
+        self.markdown_view_frame: Optional[tk.Frame] = None
+        self.markdown_view_text: Optional[tk.Text] = None
+        self.markdown_view_title: Optional[tk.Label] = None
+        self.preview_mode: str = "markdown"
 
         self._build_menu()
         self._build_notebook()
@@ -333,9 +341,12 @@ class PhilNotepadPlus:
         self._load_history()
         self.root.after(0, self._enable_file_drag_drop)
 
-        # Restore session or show welcome tab
+        startup_paths = self._normalize_startup_paths(startup_paths or [])
+
+        # Restore session, open files passed by the OS/command line, or show welcome tab.
         restored = self._load_session()
-        if not restored:
+        opened_startup_files = self._open_startup_files(startup_paths)
+        if not restored and not opened_startup_files:
             self._apply_theme()
             self._new_tab(
                 title="Welcome",
@@ -677,6 +688,14 @@ class PhilNotepadPlus:
         view_menu.add_command(label="Toggle Word Wrap", command=self._toggle_word_wrap)
         view_menu.add_command(label="Toggle A4 Margin Guide", command=self._toggle_a4_margin_guide)
         view_menu.add_separator()
+        view_menu.add_command(label="Markdown View    Ctrl+M", command=self._open_markdown_view)
+        view_menu.add_command(label="HTML Preview", command=lambda: self._open_preview("html"))
+        view_menu.add_command(label="CSV/TSV Preview", command=lambda: self._open_preview("table"))
+        view_menu.add_command(label="JSON Tree Preview", command=lambda: self._open_preview("json"))
+        view_menu.add_command(label="Outline Preview", command=lambda: self._open_preview("outline"))
+        view_menu.add_command(label="Search Preview", command=lambda: self._open_preview("search"))
+        view_menu.add_command(label="Diff Preview", command=lambda: self._open_preview("diff"))
+        view_menu.add_separator()
         self.theme_menu: tk.Menu = tk.Menu(view_menu, tearoff=0)
         self.theme_menu.add_command(label="Dark", command=lambda: self._set_theme("Dark"))
         self.theme_menu.add_command(label="Light", command=lambda: self._set_theme("Light"))
@@ -705,11 +724,60 @@ class PhilNotepadPlus:
     def _build_notebook(self) -> None:
         style = ttk.Style()
         style.theme_use("default")
-        self.notebook: ttk.Notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill="both", expand=True)
+        self.main_pane: tk.PanedWindow = tk.PanedWindow(
+            self.root,
+            orient="horizontal",
+            sashwidth=5,
+            showhandle=False,
+            bd=0,
+            relief="flat",
+        )
+        self.main_pane.pack(fill="both", expand=True)
+        self.notebook: ttk.Notebook = ttk.Notebook(self.main_pane)
+        self.main_pane.add(self.notebook, minsize=360)
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         self.notebook.bind("<Button-3>", self._show_tab_menu)
         self.notebook.bind("<Double-Button-1>", self._toggle_file_at_tab_area)
+
+    def _build_markdown_viewer(self) -> None:
+        frame = tk.Frame(self.main_pane, bg=self.theme["bg"], width=420)
+        header = tk.Frame(frame, bg=self.theme["menu_bg"])
+        header.pack(fill="x")
+        title = tk.Label(
+            header,
+            text="Markdown View",
+            anchor="w",
+            padx=10,
+            pady=6,
+            bg=self.theme["menu_bg"],
+            fg=self.theme["menu_fg"],
+        )
+        title.pack(side="left", fill="x", expand=True)
+        tk.Button(header, text="X", width=3, command=self._close_markdown_view).pack(side="right", padx=4, pady=3)
+
+        body = tk.Frame(frame, bg=self.theme["bg"])
+        body.pack(fill="both", expand=True)
+        vscroll = tk.Scrollbar(body, orient="vertical")
+        vscroll.pack(side="right", fill="y")
+        viewer = tk.Text(
+            body,
+            wrap="word",
+            padx=16,
+            pady=14,
+            borderwidth=0,
+            highlightthickness=0,
+            state="disabled",
+            cursor="arrow",
+            yscrollcommand=vscroll.set,
+            bg=self.theme["bg"],
+            fg=self.theme["fg"],
+        )
+        viewer.pack(side="left", fill="both", expand=True)
+        vscroll.config(command=viewer.yview)
+
+        self.markdown_view_frame = frame
+        self.markdown_view_text = viewer
+        self.markdown_view_title = title
 
     # ── status bar ──────────────────────────────────────────────────────
     def _build_status_bar(self) -> None:
@@ -767,6 +835,8 @@ class PhilNotepadPlus:
         r.bind("<Control-equal>", lambda e: self._zoom_in())
         r.bind("<Control-minus>", lambda e: self._zoom_out())
         r.bind("<Control-0>", lambda e: self._zoom_reset())
+        r.bind("<Control-m>", lambda e: self._open_markdown_view())
+        r.bind("<Control-M>", lambda e: self._open_markdown_view())
 
     def _enable_file_drag_drop(self) -> None:
         """Enable Windows file drag-and-drop for the main window."""
@@ -895,6 +965,37 @@ class PhilNotepadPlus:
                 continue
         with open(path, "r", encoding="latin-1") as f:
             return f.read()
+
+    def _normalize_startup_paths(self, paths: List[str]) -> List[str]:
+        """Normalize file paths passed by command line or Windows file association."""
+        normalized: List[str] = []
+        seen = set()
+        for raw_path in paths:
+            if not raw_path:
+                continue
+            path = os.path.abspath(os.path.expanduser(raw_path.strip('"')))
+            key = self._normalize_path(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(path)
+        return normalized
+
+    def _open_startup_files(self, paths: List[str]) -> bool:
+        opened_any = False
+        missing: List[str] = []
+        for path in paths:
+            if not os.path.isfile(path):
+                missing.append(path)
+                continue
+            if self._open_path_in_tab(path, show_message=False):
+                opened_any = True
+        if missing:
+            names = "\n".join(missing[:8])
+            if len(missing) > 8:
+                names += f"\n... and {len(missing) - 8} more"
+            messagebox.showwarning("Open File", "These startup files were not found:\n\n" + names)
+        return opened_any
 
     def _normalize_path(self, path: str) -> str:
         return os.path.normcase(os.path.abspath(path))
@@ -1036,18 +1137,7 @@ class PhilNotepadPlus:
         self._save_session()
 
     def _open_dropped_file(self, path: str) -> None:
-        if not self._can_open_file_path(path):
-            return
-        try:
-            content = self._read_text_file(path)
-        except Exception as exc:
-            messagebox.showerror("Open File", f"Unable to open dropped file:\n{path}\n\n{exc}")
-            return
-
-        ext = os.path.splitext(path)[1].lower()
-        lang = EXT_MAP.get(ext, "Plain Text")
-        self._new_tab(title=os.path.basename(path), content=content, filepath=path, language=lang)
-        self._add_recent(path)
+        self._open_path_in_tab(path)
 
     # ── tab helpers ─────────────────────────────────────────────────────
     def _make_editor(self, parent: tk.Frame) -> Tuple[tk.Text, LineNumbers, Optional[tk.Scrollbar], tk.Frame, tk.Canvas, tk.Frame]:
@@ -1080,9 +1170,7 @@ class PhilNotepadPlus:
         vscroll = tk.Scrollbar(frame, orient="vertical", command=text.yview)
         vscroll.pack(side="right", fill="y")
         minimap = tk.Canvas(frame, width=88, highlightthickness=0, bd=0, bg=self._minimap_bg_color())
-        minimap.pack(side="right", fill="y")
         minimap_separator = tk.Frame(frame, width=1, bg=self._minimap_separator_color())
-        minimap_separator.pack(side="right", fill="y")
         text.pack(side="left", fill="both", expand=True)
         def _sync_yview(first: str, last: str) -> None:
             vscroll.set(first, last)
@@ -1107,8 +1195,16 @@ class PhilNotepadPlus:
         text.bind("<Right>", self._on_commit_virtual_closer_key)
         text.bind("<Down>", self._on_commit_virtual_closer_key)
         text.bind("<ButtonRelease-1>", self._on_text_click_release)
+        text.bind("<Double-ButtonRelease-1>", self._on_text_double_click_release)
         text.bind("<MouseWheel>", self._on_scroll)
-        text.bind("<Configure>", lambda e: (self._redraw_line_numbers(), self._update_a4_margin_guides()))
+        text.bind(
+            "<Configure>",
+            lambda e: (
+                self._redraw_line_numbers(),
+                self._update_a4_margin_guides(),
+                self._draw_minimap(self.current_tab),
+            ),
+        )
         text.bind("<Button-3>", self._context_menu)
         text.bind("<Control-d>", self._on_duplicate_line_shortcut)
         text.bind("<Control-D>", self._on_duplicate_line_shortcut)
@@ -1200,6 +1296,7 @@ class PhilNotepadPlus:
             self._update_occurrence_preview(tab, tab.occurrence_query)
             self._update_status()
             self._rebuild_window_menu()
+            self._sync_markdown_view()
 
     # ── file operations ─────────────────────────────────────────────────
     def _new_file(self) -> None:
@@ -1258,6 +1355,7 @@ class PhilNotepadPlus:
         self._redraw_line_numbers()
         self._draw_minimap(tab)
         self._update_status()
+        self._sync_markdown_view()
 
     def _open_file(self) -> None:
         path = filedialog.askopenfilename(filetypes=[
@@ -1276,18 +1374,24 @@ class PhilNotepadPlus:
         ])
         if not path:
             return
-        if not self._can_open_file_path(path):
-            return
+        self._open_path_in_tab(path)
+
+    def _open_path_in_tab(self, path: str, show_message: bool = True, add_to_recent: bool = True) -> bool:
+        path = os.path.abspath(path)
+        if not self._can_open_file_path(path, show_message=show_message):
+            return self._find_open_tab_by_path(path) is not None
         try:
             content = self._read_text_file(path)
         except Exception as exc:
-            messagebox.showerror("Open File", f"Unable to open file:\n{path}\n\n{exc}")
-            return
+            if show_message:
+                messagebox.showerror("Open File", f"Unable to open file:\n{path}\n\n{exc}")
+            return False
         ext = os.path.splitext(path)[1].lower()
         lang = EXT_MAP.get(ext, "Plain Text")
-        title = os.path.basename(path)
-        self._new_tab(title=title, content=content, filepath=path, language=lang)
-        self._add_recent(path)
+        self._new_tab(title=os.path.basename(path), content=content, filepath=path, language=lang)
+        if add_to_recent:
+            self._add_recent(path)
+        return True
 
     def _save_file(self) -> None:
         tab = self.current_tab
@@ -1336,6 +1440,7 @@ class PhilNotepadPlus:
         self._highlight_syntax()
         self._update_status()
         self._add_recent(path)
+        self._sync_markdown_view()
         self._save_session()
 
     def _suggest_save_filename(self, tab: EditorTab) -> str:
@@ -1703,17 +1808,7 @@ window.addEventListener('load', function () {{
         if not os.path.exists(path):
             messagebox.showerror("Error", f"File not found:\n{path}")
             return
-        if not self._can_open_file_path(path):
-            return
-        try:
-            content = self._read_text_file(path)
-        except Exception as exc:
-            messagebox.showerror("Open File", f"Unable to open file:\n{path}\n\n{exc}")
-            return
-        ext = os.path.splitext(path)[1].lower()
-        lang = EXT_MAP.get(ext, "Plain Text")
-        self._new_tab(title=os.path.basename(path), content=content, filepath=path, language=lang)
-        self._add_recent(path)
+        self._open_path_in_tab(path)
 
     # ── window/tab management ───────────────────────────────────────────
     def _tab_title(self, tab: EditorTab) -> str:
@@ -1934,7 +2029,7 @@ window.addEventListener('load', function () {{
             return
         win = tk.Toplevel(self.root)
         win.title("Find & Replace" if replace else "Find")
-        win.geometry("520x150" if replace else "520x104")
+        win.geometry("600x150" if replace else "600x104")
         win.resizable(False, False)
         win.transient(self.root)
         win.configure(bg=self.theme["menu_bg"])
@@ -2067,7 +2162,7 @@ window.addEventListener('load', function () {{
         tk.Button(nav_frame, text="X", width=3, command=_close_find).pack(side="left", padx=1)
         tk.Checkbutton(
             options,
-            text="Aa",
+            text="Match case",
             variable=case_var,
             command=_refresh_find_highlight,
             bg=self.theme["menu_bg"],
@@ -2370,6 +2465,309 @@ window.addEventListener('load', function () {{
         self._update_status()
         self._save_session()
 
+    def _open_markdown_view(self) -> None:
+        self._open_preview("markdown")
+
+    def _open_preview(self, mode: str) -> None:
+        tab = self.current_tab
+        if not tab:
+            return
+        if not self._preview_allowed(mode, tab):
+            self._close_markdown_view()
+            messagebox.showinfo("Preview", self._preview_unavailable_message(mode))
+            return
+        if self.markdown_view_frame is None:
+            self._build_markdown_viewer()
+        if not self.markdown_view_visible and self.markdown_view_frame is not None:
+            self.main_pane.add(self.markdown_view_frame, minsize=260, width=430)
+            self.markdown_view_visible = True
+        self.preview_mode = mode
+        self._refresh_markdown_view()
+
+    def _close_markdown_view(self) -> None:
+        if self.markdown_view_frame is None:
+            self.markdown_view_visible = False
+            return
+        try:
+            self.main_pane.forget(self.markdown_view_frame)
+        except Exception:
+            pass
+        self.markdown_view_visible = False
+
+    def _is_markdown_tab(self, tab: Optional[EditorTab]) -> bool:
+        if not tab or not tab.filepath:
+            return False
+        return os.path.splitext(tab.filepath)[1].lower() == ".md"
+
+    def _tab_extension(self, tab: Optional[EditorTab]) -> str:
+        if not tab or not tab.filepath:
+            return ""
+        return os.path.splitext(tab.filepath)[1].lower()
+
+    def _preview_allowed(self, mode: str, tab: Optional[EditorTab]) -> bool:
+        ext = self._tab_extension(tab)
+        if mode == "markdown":
+            return ext == ".md"
+        if mode == "html":
+            return ext in {".html", ".htm"}
+        if mode == "table":
+            return ext in {".csv", ".tsv"}
+        if mode == "json":
+            return ext == ".json"
+        if mode == "diff":
+            return bool(tab and tab.filepath and os.path.exists(tab.filepath))
+        return tab is not None
+
+    def _preview_unavailable_message(self, mode: str) -> str:
+        if mode == "markdown":
+            return "Markdown View is available only for .md files."
+        if mode == "html":
+            return "HTML Preview is available only for .html or .htm files."
+        if mode == "table":
+            return "CSV/TSV Preview is available only for .csv or .tsv files."
+        if mode == "json":
+            return "JSON Tree Preview is available only for .json files."
+        if mode == "diff":
+            return "Diff Preview needs a saved file on disk."
+        return "Preview is not available for the current tab."
+
+    def _preview_title(self, mode: str) -> str:
+        return {
+            "markdown": "Markdown View",
+            "html": "HTML Preview",
+            "table": "CSV/TSV Preview",
+            "json": "JSON Tree Preview",
+            "outline": "Outline Preview",
+            "search": "Search Preview",
+            "diff": "Diff Preview",
+        }.get(mode, "Preview")
+
+    def _sync_markdown_view(self) -> None:
+        if not self.markdown_view_visible:
+            return
+        if not self._preview_allowed(self.preview_mode, self.current_tab):
+            self._close_markdown_view()
+            return
+        self._refresh_markdown_view()
+
+    def _refresh_markdown_view(self) -> None:
+        tab = self.current_tab
+        viewer = self.markdown_view_text
+        if not self.markdown_view_visible or not self._preview_allowed(self.preview_mode, tab) or viewer is None:
+            return
+        if self.markdown_view_title is not None:
+            self.markdown_view_title.config(text=f"{self._preview_title(self.preview_mode)} - {self._tab_title(tab)}")
+
+        content = tab.text.get("1.0", "end-1c") if tab else ""
+        viewer.configure(state="normal")
+        viewer.delete("1.0", "end")
+        self._configure_markdown_view_tags(viewer)
+        if self.preview_mode == "markdown":
+            self._render_markdown_preview(viewer, content)
+        elif self.preview_mode == "html":
+            self._render_html_preview(viewer, content)
+        elif self.preview_mode == "table":
+            self._render_table_preview(viewer, content, self._tab_extension(tab))
+        elif self.preview_mode == "json":
+            self._render_json_preview(viewer, content)
+        elif self.preview_mode == "outline":
+            self._render_outline_preview(viewer, content, tab.language if tab else "")
+        elif self.preview_mode == "search":
+            self._render_search_preview(viewer, content, tab)
+        elif self.preview_mode == "diff":
+            self._render_diff_preview(viewer, content, tab)
+        viewer.configure(state="disabled")
+
+    def _configure_markdown_view_tags(self, viewer: tk.Text) -> None:
+        base_family = self.font_family
+        viewer.configure(
+            bg=self.theme["bg"],
+            fg=self.theme["fg"],
+            font=(base_family, max(10, self.font_size)),
+        )
+        viewer.tag_configure("md_h1", font=(base_family, self.font_size + 8, "bold"), spacing1=12, spacing3=8)
+        viewer.tag_configure("md_h2", font=(base_family, self.font_size + 5, "bold"), spacing1=10, spacing3=6)
+        viewer.tag_configure("md_h3", font=(base_family, self.font_size + 3, "bold"), spacing1=8, spacing3=4)
+        viewer.tag_configure("md_quote", lmargin1=18, lmargin2=18, foreground="#9CDCFE" if self.theme_name == "Dark" else "#57606A")
+        viewer.tag_configure("md_list", lmargin1=20, lmargin2=38)
+        viewer.tag_configure("md_code", font=("Cascadia Mono", max(9, self.font_size - 1)), background="#2A2A2A" if self.theme_name == "Dark" else "#F6F8FA")
+        viewer.tag_configure("md_para", spacing1=2, spacing3=6)
+        viewer.tag_configure("preview_muted", foreground="#9AA0A6" if self.theme_name == "Dark" else "#6A737D")
+        viewer.tag_configure("preview_error", foreground="#F07178" if self.theme_name == "Dark" else "#B31D28")
+        viewer.tag_configure("preview_added", foreground="#C3E88D" if self.theme_name == "Dark" else "#22863A")
+        viewer.tag_configure("preview_removed", foreground="#F07178" if self.theme_name == "Dark" else "#B31D28")
+        viewer.tag_configure("preview_info", foreground="#89DDFF" if self.theme_name == "Dark" else "#0969DA")
+
+    def _render_markdown_preview(self, viewer: tk.Text, content: str) -> None:
+        in_code = False
+        for raw_line in content.splitlines():
+            line = raw_line.rstrip()
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_code = not in_code
+                continue
+            if in_code:
+                viewer.insert("end", raw_line + "\n", ("md_code",))
+                continue
+            self._insert_markdown_view_line(viewer, line)
+
+    def _render_html_preview(self, viewer: tk.Text, content: str) -> None:
+        cleaned = re.sub(r"(?is)<(script|style).*?>.*?</\1>", "", content)
+        cleaned = re.sub(r"(?i)<br\s*/?>", "\n", cleaned)
+        cleaned = re.sub(r"(?i)</(p|div|section|article|header|footer|li|h[1-6]|tr)>", "\n", cleaned)
+        cleaned = re.sub(r"(?is)<[^>]+>", "", cleaned)
+        lines = [html_unescape(line).strip() for line in cleaned.splitlines()]
+        text_lines = [line for line in lines if line]
+        if not text_lines:
+            viewer.insert("end", "No readable HTML text found.\n", ("preview_muted",))
+            return
+        for line in text_lines:
+            viewer.insert("end", line + "\n", ("md_para",))
+
+    def _render_table_preview(self, viewer: tk.Text, content: str, ext: str) -> None:
+        delimiter = "\t" if ext == ".tsv" else ","
+        try:
+            rows = list(csv.reader(content.splitlines(), delimiter=delimiter))
+        except Exception as exc:
+            viewer.insert("end", f"Unable to parse table: {exc}\n", ("preview_error",))
+            return
+        if not rows:
+            viewer.insert("end", "No rows found.\n", ("preview_muted",))
+            return
+        rows = rows[:250]
+        widths = [0] * max(len(row) for row in rows)
+        for row in rows:
+            for i, cell in enumerate(row):
+                widths[i] = min(40, max(widths[i], len(cell)))
+        for r, row in enumerate(rows):
+            cells = [
+                (row[i] if i < len(row) else "")[:40].ljust(widths[i])
+                for i in range(len(widths))
+            ]
+            tag = "md_code" if r == 0 else "md_para"
+            viewer.insert("end", " | ".join(cells).rstrip() + "\n", (tag,))
+        if len(rows) == 250:
+            viewer.insert("end", "\nShowing first 250 rows.\n", ("preview_muted",))
+
+    def _render_json_preview(self, viewer: tk.Text, content: str) -> None:
+        try:
+            value = json.loads(content)
+        except Exception as exc:
+            viewer.insert("end", f"Invalid JSON: {exc}\n", ("preview_error",))
+            return
+        self._insert_json_tree_node(viewer, value)
+
+    def _insert_json_tree_node(self, viewer: tk.Text, value: Any, indent: int = 0, label: str = "") -> None:
+        prefix = "  " * indent
+        head = f"{prefix}{label}: " if label else prefix
+        if isinstance(value, dict):
+            viewer.insert("end", f"{head}{{{len(value)} keys}}\n", ("preview_info",))
+            for key, child in value.items():
+                self._insert_json_tree_node(viewer, child, indent + 1, str(key))
+        elif isinstance(value, list):
+            viewer.insert("end", f"{head}[{len(value)} items]\n", ("preview_info",))
+            for i, child in enumerate(value[:200]):
+                self._insert_json_tree_node(viewer, child, indent + 1, str(i))
+            if len(value) > 200:
+                viewer.insert("end", f"{prefix}  ... {len(value) - 200} more items\n", ("preview_muted",))
+        else:
+            viewer.insert("end", f"{head}{value!r}\n", ("md_para",))
+
+    def _render_outline_preview(self, viewer: tk.Text, content: str, language: str) -> None:
+        found = False
+        for line_no, line in enumerate(content.splitlines(), start=1):
+            stripped = line.strip()
+            item = ""
+            if language == "Markdown":
+                match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+                if match:
+                    item = f"{line_no}: {'  ' * (len(match.group(1)) - 1)}{match.group(2)}"
+            elif language == "Python":
+                match = re.match(r"^(class|def)\s+([A-Za-z_][\w]*)", stripped)
+                if match:
+                    item = f"{line_no}: {match.group(1)} {match.group(2)}"
+            elif language == "HTML":
+                match = re.match(r"<(h[1-6])[^>]*>(.*?)</\1>", stripped, flags=re.IGNORECASE)
+                if match:
+                    item = f"{line_no}: {html_unescape(re.sub(r'<[^>]+>', '', match.group(2))).strip()}"
+            else:
+                match = re.match(r"^\s*(def|class|function)\s+([A-Za-z_][\w]*)", line)
+                if match:
+                    item = f"{line_no}: {match.group(1)} {match.group(2)}"
+            if item:
+                found = True
+                viewer.insert("end", item + "\n", ("md_para",))
+        if not found:
+            viewer.insert("end", "No outline items found.\n", ("preview_muted",))
+
+    def _render_search_preview(self, viewer: tk.Text, content: str, tab: Optional[EditorTab]) -> None:
+        query = (tab.occurrence_query if tab else "") or (self._occurrence_query_from_cursor(tab) if tab else "")
+        query = query.strip()
+        if not query:
+            viewer.insert("end", "Double-click a word or select text first.\n", ("preview_muted",))
+            return
+        count = 0
+        for line_no, line in enumerate(content.splitlines(), start=1):
+            if query in line:
+                count += 1
+                viewer.insert("end", f"{line_no}: {line.strip()}\n", ("md_para",))
+        if not count:
+            viewer.insert("end", f"No matches for {query!r}.\n", ("preview_muted",))
+        else:
+            viewer.insert("1.0", f"{count} matches for {query!r}\n\n", ("preview_info",))
+
+    def _render_diff_preview(self, viewer: tk.Text, content: str, tab: Optional[EditorTab]) -> None:
+        if not tab or not tab.filepath:
+            viewer.insert("end", "Diff needs a saved file.\n", ("preview_muted",))
+            return
+        try:
+            disk_content = self._read_text_file(tab.filepath)
+        except Exception as exc:
+            viewer.insert("end", f"Unable to read saved file: {exc}\n", ("preview_error",))
+            return
+        diff = list(difflib.unified_diff(
+            disk_content.splitlines(),
+            content.splitlines(),
+            fromfile="saved",
+            tofile="current",
+            lineterm="",
+        ))
+        if not diff:
+            viewer.insert("end", "No differences from saved file.\n", ("preview_muted",))
+            return
+        for line in diff[:1000]:
+            if line.startswith("+") and not line.startswith("+++"):
+                tag = "preview_added"
+            elif line.startswith("-") and not line.startswith("---"):
+                tag = "preview_removed"
+            elif line.startswith("@@"):
+                tag = "preview_info"
+            else:
+                tag = "md_code"
+            viewer.insert("end", line + "\n", (tag,))
+        if len(diff) > 1000:
+            viewer.insert("end", f"\nShowing first 1000 diff lines of {len(diff)}.\n", ("preview_muted",))
+
+    def _insert_markdown_view_line(self, viewer: tk.Text, line: str) -> None:
+        stripped = line.strip()
+        if not stripped:
+            viewer.insert("end", "\n")
+            return
+        heading = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+        if heading:
+            level = min(3, len(heading.group(1)))
+            viewer.insert("end", heading.group(2) + "\n", (f"md_h{level}",))
+            return
+        quote = re.match(r"^>\s?(.*)$", stripped)
+        if quote:
+            viewer.insert("end", quote.group(1) + "\n", ("md_quote",))
+            return
+        bullet = re.match(r"^([-*+]|\d+\.)\s+(.*)$", stripped)
+        if bullet:
+            viewer.insert("end", f"  {bullet.group(1)} {bullet.group(2)}\n", ("md_list",))
+            return
+        viewer.insert("end", stripped + "\n", ("md_para",))
+
     # ── word wrap ───────────────────────────────────────────────────────
     def _toggle_word_wrap(self) -> None:
         self.word_wrap = not self.word_wrap
@@ -2514,6 +2912,30 @@ window.addEventListener('load', function () {{
     def _minimap_cursor_color(self) -> str:
         return "#569CD6" if self.theme_name == "Dark" else "#007ACC"
 
+    def _tab_needs_minimap(self, tab: EditorTab) -> bool:
+        try:
+            first, last = tab.text.yview()
+            return first > 0.0 or last < 0.999
+        except Exception:
+            return False
+
+    def _sync_minimap_visibility(self, tab: Optional[EditorTab] = None) -> bool:
+        tab = tab or self.current_tab
+        if not tab or not tab.minimap:
+            return False
+        show = self._tab_needs_minimap(tab)
+        if show:
+            if not tab.minimap.winfo_ismapped():
+                tab.minimap.pack(side="right", fill="y", before=tab.text)
+            if tab.minimap_separator and not tab.minimap_separator.winfo_ismapped():
+                tab.minimap_separator.pack(side="right", fill="y", before=tab.text)
+        else:
+            tab.minimap.delete("all")
+            tab.minimap.pack_forget()
+            if tab.minimap_separator:
+                tab.minimap_separator.pack_forget()
+        return show
+
     def _occurrence_query_from_cursor(self, tab: EditorTab) -> str:
         text = tab.text
         try:
@@ -2524,11 +2946,12 @@ window.addEventListener('load', function () {{
         except tk.TclError:
             pass
         try:
+            if text.compare(tk.INSERT, "==", "insert lineend"):
+                return ""
             token = text.get("insert wordstart", "insert wordend").strip()
             if token:
                 return token[:120]
-            line = text.get("insert linestart", "insert lineend").strip()
-            return line[:120]
+            return ""
         except tk.TclError:
             return ""
 
@@ -2584,6 +3007,8 @@ window.addEventListener('load', function () {{
         if not tab or not tab.minimap:
             return
         canvas = tab.minimap
+        if not self._sync_minimap_visibility(tab):
+            return
         canvas.delete("all")
         canvas.configure(bg=self._minimap_bg_color())
         try:
@@ -2671,8 +3096,12 @@ window.addEventListener('load', function () {{
         self._redraw_line_numbers()
         self._draw_minimap(tab)
         self._update_status()
+        self._sync_markdown_view()
 
     def _on_text_click_release(self, event: Any = None) -> None:
+        self._on_key_release(event)
+
+    def _on_text_double_click_release(self, event: Any = None) -> None:
         self._on_key_release(event)
         if self.current_tab:
             self._update_occurrence_preview(self.current_tab)
@@ -2826,6 +3255,12 @@ window.addEventListener('load', function () {{
         if self.current_tab:
             self._update_virtual_closer(self.current_tab)
         self._update_a4_margin_guides()
+        if self.markdown_view_frame is not None:
+            self.markdown_view_frame.config(bg=t["bg"])
+            if self.markdown_view_text is not None:
+                self._configure_markdown_view_tags(self.markdown_view_text)
+            if self.markdown_view_title is not None:
+                self.markdown_view_title.config(bg=t["menu_bg"], fg=t["menu_fg"])
 
     # ── next tab ────────────────────────────────────────────────────────
     def _next_tab(self) -> None:
@@ -2846,7 +3281,7 @@ window.addEventListener('load', function () {{
     def _welcome_content(self) -> str:
         return (
             "╔══════════════════════════════════════════════╗\n"
-            "║          Welcome to Phil Notepad+            ║\n"
+            "║            Welcome to Notepad--             ║\n"
             "╚══════════════════════════════════════════════╝\n\n"
             "  A lightweight, Notepad++-style editor.\n\n"
             "  Keyboard shortcuts\n"
@@ -2923,9 +3358,8 @@ window.addEventListener('load', function () {{
         lang = EXT_MAP.get(ext, "Plain Text")
         self._new_tab(title=os.path.basename(path), content=content, filepath=path, language=lang)
 
-
 # ─── Entry point ────────────────────────────────────────────────────────
 if __name__ == "__main__":
     root = tk.Tk()
-    app = PhilNotepadPlus(root)
+    app = NotepadMinusMinus(root, startup_paths=sys.argv[1:])
     root.mainloop()

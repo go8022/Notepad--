@@ -1,5 +1,5 @@
 ╔══════════════════════════════════════════════╗
-║          Welcome to Phil Notepad+            ║
+║            Welcome to Notepad--             ║
 ╚══════════════════════════════════════════════╝
 
   A lightweight, Notepad++-style editor.
