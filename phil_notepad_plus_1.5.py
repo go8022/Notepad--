@@ -69,6 +69,22 @@ SYNTAX: Dict[str, Dict[str, str]] = {
         "comments": r'(//.*?$|/\*[\s\S]*?\*/)',
         "numbers":  r'\b(\d+\.?\d*[fFuUlL]*)\b',
     },
+    "C#": {
+        "preprocessor": r'(^\s*#\s*(?:if|else|elif|endif|define|undef|warning|error|line|region|endregion|nullable|pragma)\b.*$)',
+        "keywords": r"\b(abstract|as|base|bool|break|byte|case|catch|char|checked|class|"
+                    r"const|continue|decimal|default|delegate|do|double|else|enum|event|"
+                    r"explicit|extern|false|finally|fixed|float|for|foreach|goto|if|"
+                    r"implicit|in|int|interface|internal|is|lock|long|namespace|new|null|"
+                    r"object|operator|out|override|params|private|protected|public|readonly|"
+                    r"record|ref|return|sbyte|sealed|short|sizeof|stackalloc|static|string|"
+                    r"struct|switch|this|throw|true|try|typeof|uint|ulong|unchecked|unsafe|"
+                    r"ushort|using|virtual|void|volatile|while|async|await|var|dynamic|yield)\b",
+        "builtins": r"\b(Console|String|Math|DateTime|Task|List|Dictionary|IEnumerable|"
+                    r"Exception|EventArgs|Action|Func|Guid|TimeSpan|Uri|Regex)\b",
+        "strings":  r'(@\"[\s\S]*?\"|\".*?\"|\'.*?\')',
+        "comments": r'(//.*?$|/\*[\s\S]*?\*/)',
+        "numbers":  r'\b(\d+\.?\d*[mMdDfFuUlL]*)\b',
+    },
     "JavaScript": {
         "keywords": r"\b(var|let|const|function|return|if|else|for|while|do|switch|case|"
                     r"break|continue|new|this|class|extends|import|export|default|from|"
@@ -84,6 +100,12 @@ SYNTAX: Dict[str, Dict[str, str]] = {
     "HTML": {
         "tags":     r'(</?[a-zA-Z][a-zA-Z0-9]*)',
         "attrs":    r'\b([a-zA-Z\-]+)(?==)',
+        "strings":  r'(\".*?\"|\'.*?\')',
+        "comments": r'(<!--[\s\S]*?-->)',
+    },
+    "XAML": {
+        "tags":     r'(</?[a-zA-Z_][a-zA-Z0-9_\.\-:]*)',
+        "attrs":    r'\b([a-zA-Z_][\w\.\-:]*)(?==)',
         "strings":  r'(\".*?\"|\'.*?\')',
         "comments": r'(<!--[\s\S]*?-->)',
     },
@@ -114,14 +136,16 @@ SYNTAX: Dict[str, Dict[str, str]] = {
         "numbers":  r'\b(\d+\.?\d*)\b',
     },
     "Markdown": {
-        "headings":    r'(^#{1,6}\s+.*$)',
-        "bold":        r'(\*\*[^*]+?\*\*|__[^_]+?__)',
-        "italic":      r'(?<!\*)(\*[^*]+?\*)(?!\*)|(?<!_)(_[^_]+?_)(?!_)',
-        "code_block":  r'(```[\s\S]*?```)',
-        "inline_code": r'(`[^`]+?`)',
-        "links":       r'(\[[^\]]+?\]\([^\)]+?\))',
-        "lists":       r'(^\s*[\-\*\+]\s+)',
-        "numbers":     r'(^\s*\d+\.\s+)',
+        "headings":    r'^(#{1,6})\s+.*$',
+        "bold":        r'\*\*(.*?)\*\*|__(.*?)__',
+        "italic":      r'(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.*?)(?<!_)_(?!_)',
+        "code_block":  r'```[\s\S]*?```',
+        "inline_code": r'`[^`]+`',
+        "links":       r'\[([^\]]+)\]\(([^)]+)\)',
+        "lists":       r'^\s*[-*+]\s+.*',
+        "numbers":     r'^\s*\d+\.\s+.*',
+        "blockquote":  r'^>\s+.*',
+        "hr":          r'^(-{3,}|\*{3,})$',
     },
     "YAML": {
         "keys":     r'^(\s*[\w\-\.]+)\s*:',
@@ -146,9 +170,11 @@ EXT_MAP: Dict[str, str] = {
     ".py": "Python", ".pyw": "Python",
     ".cpp": "C++", ".cxx": "C++", ".cc": "C++", ".h": "C++", ".hpp": "C++",
     ".c": "C++",
+    ".cs": "C#",
     ".js": "JavaScript", ".mjs": "JavaScript", ".jsx": "JavaScript",
     ".ts": "JavaScript", ".tsx": "JavaScript",
     ".html": "HTML", ".htm": "HTML", ".xml": "HTML", ".svg": "HTML",
+    ".xaml": "XAML",
     ".css": "CSS", ".scss": "CSS", ".less": "CSS",
     ".json": "JSON",
     ".sql": "SQL",
@@ -207,7 +233,8 @@ THEMES: Dict[str, Dict[str, Any]] = {
             "headings":    "#89DDFF",  "bold":        "#EEFFFF",
             "italic":      "#F78C6C",  "code_block":  "#C792EA",
             "inline_code": "#FFCB6B",  "links":       "#80CBC4",
-            "lists":       "#F07178",  "sections":    "#C3E88D",
+            "lists":       "#F07178",  "blockquote":  "#9CDCFE",
+            "hr":          "#7F8C98",  "sections":    "#C3E88D",
         },
     },
     "Light": {
@@ -228,7 +255,8 @@ THEMES: Dict[str, Dict[str, Any]] = {
             "headings":    "#005CC5",  "bold":        "#24292E",
             "italic":      "#D73A49",  "code_block":  "#6F42C1",
             "inline_code": "#B08800",  "links":       "#0086B3",
-            "lists":       "#E36209",  "sections":    "#22863A",
+            "lists":       "#E36209",  "blockquote":  "#57606A",
+            "hr":          "#6A737D",  "sections":    "#22863A",
         },
     },
 }
@@ -1197,6 +1225,10 @@ class NotepadMinusMinus:
         text.bind("<ButtonRelease-1>", self._on_text_click_release)
         text.bind("<Double-ButtonRelease-1>", self._on_text_double_click_release)
         text.bind("<MouseWheel>", self._on_scroll)
+        text.bind("<<Paste>>", self._on_text_changed_after_idle, add="+")
+        text.bind("<<Cut>>", self._on_text_changed_after_idle, add="+")
+        text.bind("<<Undo>>", self._on_text_changed_after_idle, add="+")
+        text.bind("<<Redo>>", self._on_text_changed_after_idle, add="+")
         text.bind(
             "<Configure>",
             lambda e: (
@@ -1352,6 +1384,7 @@ class NotepadMinusMinus:
         tab.modified = True
         self._update_tab_title(tab)
         self._schedule_highlight_syntax()
+        self._schedule_insert_visible(tab)
         self._redraw_line_numbers()
         self._draw_minimap(tab)
         self._update_status()
@@ -1362,8 +1395,10 @@ class NotepadMinusMinus:
             ("All Files", "*.*"),
             ("Python", "*.py *.pyw"),
             ("C++", "*.cpp *.cxx *.cc *.h *.hpp *.c"),
+            ("C#", "*.cs"),
             ("JavaScript", "*.js *.mjs *.jsx *.ts *.tsx"),
             ("HTML", "*.html *.htm"),
+            ("XAML", "*.xaml"),
             ("CSS", "*.css *.scss *.less"),
             ("JSON", "*.json"),
             ("SQL", "*.sql"),
@@ -1412,8 +1447,9 @@ class NotepadMinusMinus:
         path = filedialog.asksaveasfilename(initialfile=initialfile, defaultextension=".txt", filetypes=[
             ("Text", "*.txt"),
             ("Python", "*.py"), ("C++", "*.cpp"),
+            ("C#", "*.cs"),
             ("JavaScript", "*.js"),
-            ("HTML", "*.html"), ("CSS", "*.css"),
+            ("HTML", "*.html"), ("XAML", "*.xaml"), ("CSS", "*.css"),
             ("JSON", "*.json"), ("SQL", "*.sql"),
             ("Markdown", "*.md"), ("YAML", "*.yaml"),
             ("TOML", "*.toml"), ("All Files", "*.*"),
@@ -1945,6 +1981,7 @@ window.addEventListener('load', function () {{
         tab = self.current_tab
         if tab:
             tab.text.event_generate("<<Paste>>")
+            self._schedule_insert_visible(tab)
 
     def _select_all(self) -> None:
         tab = self.current_tab
@@ -1967,7 +2004,7 @@ window.addEventListener('load', function () {{
     def _line_comment_token(self, language: str) -> Optional[str]:
         if language in {"Python", "YAML", "TOML"}:
             return "#"
-        if language in {"C++", "JavaScript", "SQL"}:
+        if language in {"C++", "C#", "JavaScript", "SQL"}:
             return "//" if language != "SQL" else "--"
         if language in {"Plain Text", "Markdown"}:
             return "#"
@@ -2507,7 +2544,7 @@ window.addEventListener('load', function () {{
     def _preview_allowed(self, mode: str, tab: Optional[EditorTab]) -> bool:
         ext = self._tab_extension(tab)
         if mode == "markdown":
-            return ext == ".md"
+            return ext in {".md", ".markdown"} or bool(tab and tab.language == "Markdown")
         if mode == "html":
             return ext in {".html", ".htm"}
         if mode == "table":
@@ -2520,7 +2557,7 @@ window.addEventListener('load', function () {{
 
     def _preview_unavailable_message(self, mode: str) -> str:
         if mode == "markdown":
-            return "Markdown View is available only for .md files."
+            return "Markdown View is available only for Markdown files."
         if mode == "html":
             return "HTML Preview is available only for .html or .htm files."
         if mode == "table":
@@ -2591,6 +2628,11 @@ window.addEventListener('load', function () {{
         viewer.tag_configure("md_quote", lmargin1=18, lmargin2=18, foreground="#9CDCFE" if self.theme_name == "Dark" else "#57606A")
         viewer.tag_configure("md_list", lmargin1=20, lmargin2=38)
         viewer.tag_configure("md_code", font=("Cascadia Mono", max(9, self.font_size - 1)), background="#2A2A2A" if self.theme_name == "Dark" else "#F6F8FA")
+        viewer.tag_configure("md_bold", font=(base_family, max(10, self.font_size), "bold"))
+        viewer.tag_configure("md_italic", font=(base_family, max(10, self.font_size), "italic"))
+        viewer.tag_configure("md_inline_code", font=("Cascadia Mono", max(9, self.font_size - 1)), background="#2A2A2A" if self.theme_name == "Dark" else "#F6F8FA", foreground="#FFCB6B" if self.theme_name == "Dark" else "#B08800")
+        viewer.tag_configure("md_link", foreground="#80CBC4" if self.theme_name == "Dark" else "#0086B3", underline=True)
+        viewer.tag_configure("md_hr", foreground="#7F8C98" if self.theme_name == "Dark" else "#6A737D")
         viewer.tag_configure("md_para", spacing1=2, spacing3=6)
         viewer.tag_configure("preview_muted", foreground="#9AA0A6" if self.theme_name == "Dark" else "#6A737D")
         viewer.tag_configure("preview_error", foreground="#F07178" if self.theme_name == "Dark" else "#B31D28")
@@ -2686,12 +2728,12 @@ window.addEventListener('load', function () {{
                 match = re.match(r"^(class|def)\s+([A-Za-z_][\w]*)", stripped)
                 if match:
                     item = f"{line_no}: {match.group(1)} {match.group(2)}"
-            elif language == "HTML":
+            elif language in {"HTML", "XAML"}:
                 match = re.match(r"<(h[1-6])[^>]*>(.*?)</\1>", stripped, flags=re.IGNORECASE)
                 if match:
                     item = f"{line_no}: {html_unescape(re.sub(r'<[^>]+>', '', match.group(2))).strip()}"
             else:
-                match = re.match(r"^\s*(def|class|function)\s+([A-Za-z_][\w]*)", line)
+                match = re.match(r"^\s*(def|class|function|record|interface|struct)\s+([A-Za-z_][\w]*)", line)
                 if match:
                     item = f"{line_no}: {match.group(1)} {match.group(2)}"
             if item:
@@ -2758,15 +2800,44 @@ window.addEventListener('load', function () {{
             level = min(3, len(heading.group(1)))
             viewer.insert("end", heading.group(2) + "\n", (f"md_h{level}",))
             return
-        quote = re.match(r"^>\s?(.*)$", stripped)
+        if re.match(SYNTAX["Markdown"]["hr"], stripped):
+            viewer.insert("end", stripped + "\n", ("md_hr",))
+            return
+        quote = re.match(r"^>\s+(.*)$", stripped)
         if quote:
-            viewer.insert("end", quote.group(1) + "\n", ("md_quote",))
+            self._insert_markdown_inline(viewer, quote.group(1), "md_quote")
+            viewer.insert("end", "\n", ("md_quote",))
             return
         bullet = re.match(r"^([-*+]|\d+\.)\s+(.*)$", stripped)
         if bullet:
-            viewer.insert("end", f"  {bullet.group(1)} {bullet.group(2)}\n", ("md_list",))
+            viewer.insert("end", f"  {bullet.group(1)} ", ("md_list",))
+            self._insert_markdown_inline(viewer, bullet.group(2), "md_list")
+            viewer.insert("end", "\n", ("md_list",))
             return
-        viewer.insert("end", stripped + "\n", ("md_para",))
+        self._insert_markdown_inline(viewer, stripped, "md_para")
+        viewer.insert("end", "\n", ("md_para",))
+
+    def _insert_markdown_inline(self, viewer: tk.Text, text: str, base_tag: str) -> None:
+        pattern = re.compile(
+            r"(`[^`]+`)|(\*\*(.*?)\*\*|__(.*?)__)|(\[([^\]]+)\]\(([^)]+)\))|"
+            r"((?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.*?)(?<!_)_(?!_))"
+        )
+        pos = 0
+        for match in pattern.finditer(text):
+            if match.start() > pos:
+                viewer.insert("end", text[pos:match.start()], (base_tag,))
+            token = match.group(0)
+            if match.group(1):
+                viewer.insert("end", token, (base_tag, "md_inline_code"))
+            elif match.group(2):
+                viewer.insert("end", token, (base_tag, "md_bold"))
+            elif match.group(5):
+                viewer.insert("end", match.group(6), (base_tag, "md_link"))
+            else:
+                viewer.insert("end", token, (base_tag, "md_italic"))
+            pos = match.end()
+        if pos < len(text):
+            viewer.insert("end", text[pos:], (base_tag,))
 
     # ── word wrap ───────────────────────────────────────────────────────
     def _toggle_word_wrap(self) -> None:
@@ -2872,8 +2943,11 @@ window.addEventListener('load', function () {{
             text.tag_configure(tag_name, foreground=color)
             try:
                 for m in re.finditer(pattern, content, re.MULTILINE):
-                    start_idx = m.start(1) if m.lastindex else m.start()
-                    end_idx = m.end(1) if m.lastindex else m.end()
+                    if lang == "Markdown":
+                        start_idx, end_idx = m.start(), m.end()
+                    else:
+                        start_idx = m.start(1) if m.lastindex else m.start()
+                        end_idx = m.end(1) if m.lastindex else m.end()
                     start = f"1.0+{start_idx}c"
                     end = f"1.0+{end_idx}c"
                     text.tag_add(tag_name, start, end)
@@ -2884,6 +2958,10 @@ window.addEventListener('load', function () {{
         for override in ("comments", "strings", "code_block"):
             if override in rules:
                 text.tag_raise(override)
+        if lang == "Markdown":
+            for override in ("bold", "inline_code", "code_block"):
+                if override in rules:
+                    text.tag_raise(override)
 
     def _schedule_highlight_syntax(self) -> None:
         if self._syntax_highlight_job is not None:
@@ -3092,11 +3170,49 @@ window.addEventListener('load', function () {{
                 tab.modified = True
                 self._update_tab_title(tab)
         self._schedule_highlight_syntax()
+        self._schedule_insert_visible(tab)
         self._update_virtual_closer(tab)
         self._redraw_line_numbers()
         self._draw_minimap(tab)
         self._update_status()
         self._sync_markdown_view()
+
+    def _on_text_changed_after_idle(self, event: Any = None) -> None:
+        tab = self.current_tab
+        widget = getattr(event, "widget", None)
+        if widget is not None:
+            for candidate in self.tabs:
+                if candidate.text is widget:
+                    tab = candidate
+                    break
+        if tab:
+            self.root.after_idle(lambda tab=tab: self._on_key_release())
+            self._schedule_insert_visible(tab)
+
+    def _schedule_insert_visible(self, tab: Optional[EditorTab] = None) -> None:
+        tab = tab or self.current_tab
+        if not tab:
+            return
+        self.root.after_idle(lambda tab=tab: self._ensure_insert_visible(tab))
+
+    def _ensure_insert_visible(self, tab: EditorTab) -> None:
+        if tab not in self.tabs:
+            return
+        text = tab.text
+        try:
+            text.see(tk.INSERT)
+            text.update_idletasks()
+            bbox = text.bbox(tk.INSERT)
+            if bbox is None:
+                text.see("insert lineend")
+                return
+            _, y, _, height = bbox
+            bottom_padding = max(24, self.font_size * 2)
+            if y + height > text.winfo_height() - bottom_padding:
+                text.see("insert +2 lines")
+                text.see(tk.INSERT)
+        except Exception:
+            pass
 
     def _on_text_click_release(self, event: Any = None) -> None:
         self._on_key_release(event)
@@ -3303,7 +3419,7 @@ window.addEventListener('load', function () {{
             "  Ctrl+0        Reset zoom\n\n"
             "  Supported languages\n"
             "  ──────────────────────────────────────\n"
-            "  Python · C++ · JavaScript · HTML · CSS\n"
+            "  Python · C++ · C# · JavaScript · HTML · XAML · CSS\n"
             "  JSON · SQL · Markdown · YAML · TOML\n"
             "  Plain Text\n"
             "\n"
